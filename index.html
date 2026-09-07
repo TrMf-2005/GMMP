@@ -213,162 +213,223 @@ body {
    </footer>
 
 <script>
-// Import des entreprises depuis JSON
+// ================= CONFIGURATION =================
+// ⚠️ Remplace cette URL par celle de TON service Render si elle change un jour
+const API_URL = "https://insti-backend-k8ob.onrender.com/api/entreprises";
+
+// ⚠️ Ce slug est DIFFÉRENT sur chacune des 5 pages !
+// genie-civil | genie-mecanique | maintenance-systemes | genie-energetique | genie-electrique-informatique
+const DEPARTEMENT = "genie-mecanique";
+
+// ================= ETAT GLOBAL =================
+let isAdmin = false;       // admin connecté ?
+let editMode = false;      // mode édition actif ?
+let adminPassword = null;  // mot de passe saisi, envoyé à chaque requête protégée
+let entreprises = [];      // liste en mémoire, reçue depuis l'API
+
+// ================= CHARGEMENT DEPUIS L'API =================
 async function loadEntreprises() {
   try {
-    const response = await fetch('entreprises.json'); // vérifie le chemin
-    if(!response.ok) throw new Error('Fichier JSON introuvable');
-    const data = await response.json();
-    entreprises = data;   // ajoute au tableau global
-    renderEntreprises();  // affiche les entreprises
-  } catch(err) {
-    console.error("Erreur chargement JSON:", err);
-    alert("Impossible de charger les entreprises depuis JSON !");
+    const response = await fetch(`${API_URL}/${DEPARTEMENT}`);
+    if (!response.ok) throw new Error('Erreur lors du chargement');
+    entreprises = await response.json();
+    renderEntreprises();
+  } catch (err) {
+    console.error("Erreur chargement API:", err);
+    alert("Impossible de charger les entreprises. Réessaie dans quelques instants (le serveur démarre parfois lentement).");
   }
 }
 
-// Appel au chargement de la page
 document.addEventListener("DOMContentLoaded", loadEntreprises);
 
-
-// ================= ADMIN =================
-const ADMIN_PASSWORD = "WebArt2026&TWO TF's Codesadmin123"; // mot de passe admin (à sécuriser en prod)
-let isAdmin = false;   // admin connecté
-let editMode = false;  // mode édition active
-let entreprises = [];  // tableau principal
-
-  
-// Ouvre modal pour ajouter entreprise
+// ================= ADMIN : CONNEXION =================
 function adminLogin() {
-  if(!isAdmin){
+  if (!isAdmin) {
     const pwd = prompt("Mot de passe administrateur :");
-    if(pwd === ADMIN_PASSWORD){
-      isAdmin = true;
-      document.getElementById('adminModal').style.display = 'flex';
-      editMode = false;
-      renderEntreprises();
-    } else if(pwd !== null){
-      alert("Mot de passe incorrect");
-    }
+    if (pwd === null) return; // annulé
+    adminPassword = pwd;
+    isAdmin = true; // on suppose correct pour l'instant, vérifié au premier appel réel
+    editMode = false;
+    document.getElementById('adminModal').style.display = 'flex';
+    renderEntreprises();
   } else {
-    // Si admin déjà actif → réouvre modal pour ajouter
     document.getElementById('adminModal').style.display = 'flex';
   }
 }
 
-// Fermer modal pour passer en mode édition
-function toggleEditMode(){
-  if(!isAdmin) return;
+function toggleEditMode() {
+  if (!isAdmin) return;
   editMode = !editMode;
-  document.getElementById('adminModal').style.display = 'none'; // ferme modal
+  document.getElementById('adminModal').style.display = 'none';
   renderEntreprises();
 }
 
-// Ajouter une entreprise via modal
-function addEntrepriseAdmin(){
-  if(!isAdmin) return alert("Vous devez être admin !");
-  const nom = document.getElementById('companyName').value;
-  const contact = document.getElementById('contactName').value;
-  const tel = document.getElementById('phone').value;
-  const ville = document.getElementById('city').value;
-
-  if(!nom || !contact || !tel || !ville) return alert("Remplis tous les champs !");
-
-  entreprises.push({nom, contact, tel, ville});
+function closeAdmin() {
+  isAdmin = false;
+  editMode = false;
+  adminPassword = null;
+  document.getElementById('adminModal').style.display = 'none';
   renderEntreprises();
-
-  document.getElementById('companyName').value='';
-  document.getElementById('contactName').value='';
-  document.getElementById('phone').value='';
-  document.getElementById('city').value='';
 }
 
-// Supprimer une entreprise
-function deleteEntreprise(i){
-  if(!isAdmin || !editMode) return;
-  if(confirm("Supprimer cette entreprise ?")){
-    entreprises.splice(i,1);
+// Gère une réponse 401/403 : mot de passe refusé par le serveur
+function gererErreurAuth(status) {
+  if (status === 401 || status === 403) {
+    alert("Mot de passe administrateur incorrect.");
+    closeAdmin();
+    return true;
+  }
+  return false;
+}
+
+// ================= ADMIN : AJOUTER =================
+async function addEntrepriseAdmin() {
+  if (!isAdmin) return alert("Vous devez être admin !");
+
+  const nom = document.getElementById('companyName').value.trim();
+  const contact = document.getElementById('contactName').value.trim();
+  const telephone = document.getElementById('phone').value.trim();
+  const ville = document.getElementById('city').value.trim();
+
+  if (!nom || !ville) return alert("Le nom et la ville sont obligatoires !");
+
+  try {
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-password': adminPassword
+      },
+      body: JSON.stringify({ nom, ville, contact, telephone, departement: DEPARTEMENT })
+    });
+
+    if (gererErreurAuth(response.status)) return;
+    if (!response.ok) throw new Error('Erreur lors de l\'ajout');
+
+    const nouvelleEntreprise = await response.json();
+    entreprises.unshift(nouvelleEntreprise);
     renderEntreprises();
+
+    document.getElementById('companyName').value = '';
+    document.getElementById('contactName').value = '';
+    document.getElementById('phone').value = '';
+    document.getElementById('city').value = '';
+  } catch (err) {
+    console.error(err);
+    alert("Erreur lors de l'ajout de l'entreprise.");
   }
 }
 
-// Modifier inline
-function editEntreprise(i){
-  if(!isAdmin || !editMode) return;
-  const e = entreprises[i];
+// ================= ADMIN : SUPPRIMER =================
+async function deleteEntreprise(id) {
+  if (!isAdmin || !editMode) return;
+  if (!confirm("Supprimer cette entreprise ?")) return;
+
+  try {
+    const response = await fetch(`${API_URL}/${id}`, {
+      method: 'DELETE',
+      headers: { 'x-admin-password': adminPassword }
+    });
+
+    if (gererErreurAuth(response.status)) return;
+    if (!response.ok) throw new Error('Erreur lors de la suppression');
+
+    entreprises = entreprises.filter(e => e._id !== id);
+    renderEntreprises();
+  } catch (err) {
+    console.error(err);
+    alert("Erreur lors de la suppression.");
+  }
+}
+
+// ================= ADMIN : MODIFIER =================
+async function editEntreprise(id) {
+  if (!isAdmin || !editMode) return;
+  const e = entreprises.find(ent => ent._id === id);
+  if (!e) return;
 
   const nom = prompt("Nom de l'entreprise :", e.nom);
-  const contact = prompt("Nom du contact :", e.contact);
-  const tel = prompt("Téléphone :", e.tel);
+  if (nom === null) return;
+  const contact = prompt("Nom du contact :", e.contact || '');
+  const telephone = prompt("Téléphone :", e.telephone || '');
   const ville = prompt("Ville :", e.ville);
 
-  if(nom && contact && tel && ville){
-    entreprises[i] = {nom, contact, tel, ville};
+  if (!nom || !ville) return alert("Le nom et la ville sont obligatoires !");
+
+  try {
+    const response = await fetch(`${API_URL}/${id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-password': adminPassword
+      },
+      body: JSON.stringify({ nom, ville, contact, telephone })
+    });
+
+    if (gererErreurAuth(response.status)) return;
+    if (!response.ok) throw new Error('Erreur lors de la modification');
+
+    const entrepriseModifiee = await response.json();
+    entreprises = entreprises.map(ent => ent._id === id ? entrepriseModifiee : ent);
     renderEntreprises();
+  } catch (err) {
+    console.error(err);
+    alert("Erreur lors de la modification.");
   }
 }
 
-// Affiche toutes les entreprises + boutons selon editMode
-function renderEntreprises(){
+// ================= AFFICHAGE =================
+function renderEntreprises() {
   const container = document.getElementById('entreprisesContainer');
-  container.innerHTML='';
+  container.innerHTML = '';
 
   let filtered = entreprises;
 
-  // Appliquer filtre recherche
   const input = document.getElementById('searchInput').value.toLowerCase();
   const type = document.getElementById('searchType').value;
-  if(input){
-    filtered = entreprises.filter(ent=>{
-      if(type==='name') return ent.nom.toLowerCase().includes(input);
-      if(type==='city') return ent.ville.toLowerCase().includes(input);
+  if (input) {
+    filtered = entreprises.filter(ent => {
+      if (type === 'name') return ent.nom.toLowerCase().includes(input);
+      if (type === 'city') return ent.ville.toLowerCase().includes(input);
       return true;
     });
   }
 
-  if(filtered.length===0){
+  if (filtered.length === 0) {
     const div = document.createElement('div');
-    div.className='no-result';
-    div.innerText='Entreprise non classée pour votre département';
+    div.className = 'no-result';
+    div.innerText = 'Entreprise non classée pour votre département';
     container.appendChild(div);
     return;
   }
 
-  filtered.forEach((e,i)=>{
+  filtered.forEach(e => {
     const div = document.createElement('div');
-    div.className='entreprise';
-    div.innerHTML=`
+    div.className = 'entreprise';
+    div.innerHTML = `
       <h3>${e.nom}</h3>
-      <p><strong>Contact :</strong> ${e.contact}</p>
-      <p><strong>Téléphone :</strong> ${e.tel}</p>
+      ${e.contact ? `<p><strong>Contact :</strong> ${e.contact}</p>` : ''}
+      ${e.telephone ? `<p><strong>Téléphone :</strong> ${e.telephone}</p>` : ''}
       <p><strong>Ville :</strong> ${e.ville}</p>
-      <button onclick="appeler('${e.tel}')">Joindre</button>
+      ${e.telephone ? `<button onclick="appeler('${e.telephone}')">Joindre</button>` : ''}
       ${isAdmin && editMode ? `
-        <button class="admin-btn" onclick="editEntreprise(${i})">Modifier</button>
-        <button class="admin-btn" onclick="deleteEntreprise(${i})">Supprimer</button>
+        <button class="admin-btn" onclick="editEntreprise('${e._id}')">Modifier</button>
+        <button class="admin-btn" onclick="deleteEntreprise('${e._id}')">Supprimer</button>
       ` : ''}
     `;
     container.appendChild(div);
   });
 }
 
-// Appeler téléphone
-function appeler(numero){
-  window.location.href="tel:"+numero;
-}
-// Déconnecter complètement l'admin
-function closeAdmin(){
-  if(!isAdmin) return;
-  isAdmin = false;       // plus admin
-  editMode = false;      // plus en mode édition
-  document.getElementById('adminModal').style.display = 'none'; // ferme modal
-  renderEntreprises();   // rafraîchit les blocs pour cacher boutons Modifier/Supprimer
+function appeler(numero) {
+  window.location.href = "tel:" + numero;
 }
 
-
-// Recherche
+// ================= RECHERCHE =================
 document.getElementById('searchInput').addEventListener('keyup', renderEntreprises);
 document.getElementById('searchType').addEventListener('change', renderEntreprises);
+  
+
 
 </script>
 </body>
